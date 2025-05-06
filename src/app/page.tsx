@@ -1,85 +1,151 @@
 'use client';
 
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
 import { Card, CardContent, CardHeader, CardTitle, CardFooter } from '@/components/ui/card';
 import { Progress } from '@/components/ui/progress';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { useToast } from '@/hooks/use-toast';
-import { Play, Pause, CheckCircle, Award, Trophy } from 'lucide-react';
+import { Play, Pause, CheckCircle, History, TimerReset } from 'lucide-react'; // Updated icons
+import { format } from 'date-fns'; // For formatting dates
 import { cn } from '@/lib/utils';
 
-const FOCUS_DURATION = 25 * 60; // 25 minutes in seconds
-const POINTS_PER_SESSION = 25;
+const DEFAULT_FOCUS_MINUTES = 25;
+const MAX_HISTORY_ENTRIES = 20; // Limit the number of history entries shown/stored
 
-interface LeaderboardEntry {
-  nickname: string;
-  points: number;
+interface SessionEntry {
+  durationMinutes: number;
+  completedAt: string; // Store as ISO string
 }
 
 export default function Home() {
-  const [timeLeft, setTimeLeft] = useState(FOCUS_DURATION);
+  const [customDurationMinutes, setCustomDurationMinutes] = useState<number>(DEFAULT_FOCUS_MINUTES);
+  const [timeLeft, setTimeLeft] = useState(customDurationMinutes * 60);
   const [timerActive, setTimerActive] = useState(false);
   const [nickname, setNickname] = useState<string>('');
-  const [leaderboard, setLeaderboard] = useState<LeaderboardEntry[]>([]);
+  const [sessionHistory, setSessionHistory] = useState<SessionEntry[]>([]);
   const [showCompletionMessage, setShowCompletionMessage] = useState(false);
+  const [isMounted, setIsMounted] = useState(false); // To prevent hydration errors with localStorage
 
   const { toast } = useToast();
 
-  // Load nickname and leaderboard from localStorage on mount
+  const currentFocusDurationSeconds = useMemo(() => customDurationMinutes * 60, [customDurationMinutes]);
+
+  // Load nickname and corresponding history from localStorage on mount
   useEffect(() => {
+    setIsMounted(true); // Component has mounted
     const storedNickname = localStorage.getItem('focusFlowNickname');
     if (storedNickname) {
       setNickname(storedNickname);
-    }
-
-    const storedLeaderboard = localStorage.getItem('focusFlowLeaderboard');
-    if (storedLeaderboard) {
-      try {
-        const parsedLeaderboard: LeaderboardEntry[] = JSON.parse(storedLeaderboard);
-         // Sort leaderboard on load
-        setLeaderboard(parsedLeaderboard.sort((a, b) => b.points - a.points));
-      } catch (error) {
-        console.error("Failed to parse leaderboard from localStorage:", error);
-        setLeaderboard([]); // Reset if parsing fails
+      const storedHistory = localStorage.getItem(`focusFlowHistory_${storedNickname}`);
+      if (storedHistory) {
+        try {
+          const parsedHistory: SessionEntry[] = JSON.parse(storedHistory);
+          setSessionHistory(parsedHistory);
+        } catch (error) {
+          console.error("Failed to parse session history from localStorage:", error);
+          setSessionHistory([]);
+        }
+      } else {
+        setSessionHistory([]); // No history for this nickname
       }
     }
-  }, []);
+     // Load custom duration if exists
+    const storedDuration = localStorage.getItem('focusFlowDuration');
+    if (storedDuration) {
+      const duration = parseInt(storedDuration, 10);
+      if (!isNaN(duration) && duration > 0) {
+        setCustomDurationMinutes(duration);
+        // Set initial timeLeft based on stored duration if timer not active
+        if (!timerActive) {
+            setTimeLeft(duration * 60);
+        }
+      }
+    }
+  }, []); // Empty dependency array: Run only once on mount
 
-  // Save leaderboard to localStorage whenever it changes
+  // Save history to localStorage whenever it changes for the current nickname
   useEffect(() => {
-    // Ensure leaderboard is always sorted before saving
-    const sortedLeaderboard = [...leaderboard].sort((a, b) => b.points - a.points);
-    localStorage.setItem('focusFlowLeaderboard', JSON.stringify(sortedLeaderboard));
-  }, [leaderboard]);
+    if (isMounted && nickname) {
+      localStorage.setItem(`focusFlowHistory_${nickname}`, JSON.stringify(sessionHistory));
+    }
+  }, [sessionHistory, nickname, isMounted]);
+
+  // Save nickname and duration to localStorage
+  useEffect(() => {
+     if (isMounted) {
+      localStorage.setItem('focusFlowNickname', nickname);
+      localStorage.setItem('focusFlowDuration', customDurationMinutes.toString());
+    }
+  }, [nickname, customDurationMinutes, isMounted]);
+
+   // Update timeLeft when customDurationMinutes changes and timer is not active
+  useEffect(() => {
+    if (!timerActive) {
+      setTimeLeft(currentFocusDurationSeconds);
+    }
+  }, [customDurationMinutes, timerActive, currentFocusDurationSeconds]);
+
 
   // Timer logic
   useEffect(() => {
+    if (!isMounted) return; // Don't run timer logic on server or before mount
+
     let interval: NodeJS.Timeout | null = null;
 
     if (timerActive && timeLeft > 0) {
       interval = setInterval(() => {
-        setTimeLeft((prevTime) => prevTime - 1);
+        setTimeLeft((prevTime) => Math.max(0, prevTime - 1)); // Ensure timeLeft doesn't go below 0
       }, 1000);
     } else if (timerActive && timeLeft === 0) {
       setTimerActive(false);
       handleSessionComplete();
-    } else if (!timerActive && timeLeft !== FOCUS_DURATION) {
-      // If timer paused, clear interval
-      if (interval) clearInterval(interval);
+    } else {
+       if (interval) clearInterval(interval);
     }
 
     return () => {
       if (interval) clearInterval(interval);
     };
-  }, [timerActive, timeLeft]);
-
+  }, [timerActive, timeLeft, isMounted]); // Add isMounted dependency
 
   const handleNicknameChange = (event: React.ChangeEvent<HTMLInputElement>) => {
     const newNickname = event.target.value;
     setNickname(newNickname);
-    localStorage.setItem('focusFlowNickname', newNickname);
+    // Load history for the new nickname
+    const storedHistory = localStorage.getItem(`focusFlowHistory_${newNickname}`);
+    if (storedHistory) {
+        try {
+            const parsedHistory: SessionEntry[] = JSON.parse(storedHistory);
+            setSessionHistory(parsedHistory);
+        } catch (error) {
+            console.error("Failed to parse session history from localStorage:", error);
+            setSessionHistory([]);
+        }
+    } else {
+        setSessionHistory([]); // Reset history if none exists for this nickname
+    }
+  };
+
+   const handleDurationChange = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const newDuration = parseInt(event.target.value, 10);
+    // Set a reasonable min/max, e.g., 1 to 120 minutes
+    if (!isNaN(newDuration) && newDuration >= 1 && newDuration <= 120) {
+      setCustomDurationMinutes(newDuration);
+      // Update timeLeft immediately if timer isn't running
+      if (!timerActive) {
+          setTimeLeft(newDuration * 60);
+      }
+    } else if (event.target.value === '') {
+        // Allow clearing the input, maybe default back or handle validation
+        // For now, let's reset to default if cleared or invalid
+         setCustomDurationMinutes(DEFAULT_FOCUS_MINUTES);
+         if (!timerActive) {
+           setTimeLeft(DEFAULT_FOCUS_MINUTES * 60);
+         }
+    }
   };
 
   const startTimer = () => {
@@ -91,7 +157,18 @@ export default function Home() {
       });
       return;
     }
-    setTimeLeft(FOCUS_DURATION); // Reset timer
+     if (customDurationMinutes < 1 || customDurationMinutes > 120) {
+       toast({
+        title: "Invalid Duration",
+        description: "Please set a duration between 1 and 120 minutes.",
+        variant: "destructive",
+      });
+      return;
+    }
+    // Only reset time if it's at the starting duration (or 0 after completion)
+    if (timeLeft === currentFocusDurationSeconds || timeLeft === 0) {
+       setTimeLeft(currentFocusDurationSeconds);
+    }
     setShowCompletionMessage(false); // Hide completion message
     setTimerActive(true);
   };
@@ -102,7 +179,7 @@ export default function Home() {
 
   const resetTimer = () => {
     setTimerActive(false);
-    setTimeLeft(FOCUS_DURATION);
+    setTimeLeft(currentFocusDurationSeconds);
     setShowCompletionMessage(false);
   }
 
@@ -116,41 +193,43 @@ export default function Home() {
     setShowCompletionMessage(true);
     toast({
       title: "Session Complete!",
-      description: `✅ Great job! You earned ${POINTS_PER_SESSION} points.`,
-      variant: "default", // Use accent color defined in theme
+      description: `✅ Great job! You completed a ${customDurationMinutes}-minute session.`,
+      variant: "default",
       duration: 5000,
     });
 
-    // Update leaderboard
-    setLeaderboard((prevLeaderboard) => {
-      const existingEntryIndex = prevLeaderboard.findIndex(entry => entry.nickname === nickname);
-      let newLeaderboard;
+    // Record session in history
+    const newSessionEntry: SessionEntry = {
+        durationMinutes: customDurationMinutes,
+        completedAt: new Date().toISOString(),
+    };
 
-      if (existingEntryIndex !== -1) {
-        // Update existing entry
-        newLeaderboard = [...prevLeaderboard];
-        newLeaderboard[existingEntryIndex] = {
-          ...newLeaderboard[existingEntryIndex],
-          points: newLeaderboard[existingEntryIndex].points + POINTS_PER_SESSION,
-        };
-      } else {
-        // Add new entry
-        newLeaderboard = [...prevLeaderboard, { nickname, points: POINTS_PER_SESSION }];
-      }
-
-      // Sort and return top entries (e.g., top 10)
-      return newLeaderboard.sort((a, b) => b.points - a.points).slice(0, 10);
+    setSessionHistory((prevHistory) => {
+        // Add new entry and limit history size
+        const updatedHistory = [newSessionEntry, ...prevHistory];
+        return updatedHistory.slice(0, MAX_HISTORY_ENTRIES);
     });
 
-    // Reset timer display after a short delay to show 00:00 briefly
+
+    // Reset timer display after a short delay
     setTimeout(() => {
-       setTimeLeft(FOCUS_DURATION);
-    }, 1500); // Delay reset slightly
+       setTimeLeft(currentFocusDurationSeconds); // Reset to the custom duration
+       setShowCompletionMessage(false); // Optionally hide message after reset
+    }, 1500);
 
-  }, [nickname, toast]);
+  }, [nickname, customDurationMinutes, toast, currentFocusDurationSeconds]);
 
 
-  const progress = ((FOCUS_DURATION - timeLeft) / FOCUS_DURATION) * 100;
+  const progress = useMemo(() => {
+    if (currentFocusDurationSeconds === 0) return 0; // Avoid division by zero
+    return ((currentFocusDurationSeconds - timeLeft) / currentFocusDurationSeconds) * 100;
+  }, [timeLeft, currentFocusDurationSeconds]);
+
+
+  // Render null or a loading state until mounted to avoid hydration mismatches
+  if (!isMounted) {
+    return null; // Or a loading spinner
+  }
 
   return (
     <div className="flex flex-col items-center justify-center min-h-screen bg-background p-4 md:p-8">
@@ -159,82 +238,107 @@ export default function Home() {
           <CardTitle className="text-center text-2xl font-semibold">FocusFlow Timer</CardTitle>
         </CardHeader>
         <CardContent className="flex flex-col items-center gap-6">
-          <div
-            className={cn(
-              "text-6xl font-mono font-bold transition-colors duration-300",
-              timerActive ? "text-primary" : "text-foreground"
-            )}
-            aria-live="polite"
-            aria-atomic="true"
-          >
-            {formatTime(timeLeft)}
+          <div className="w-full flex justify-center items-center gap-4">
+             <div className="flex-1 text-center">
+                <Label htmlFor="duration" className="text-sm text-muted-foreground">Duration (min)</Label>
+                <Input
+                    id="duration"
+                    type="number"
+                    min="1"
+                    max="120"
+                    value={customDurationMinutes}
+                    onChange={handleDurationChange}
+                    className="w-20 text-center text-lg font-medium mx-auto mt-1"
+                    aria-label="Focus duration in minutes"
+                    disabled={timerActive} // Disable changing duration while timer runs
+                />
+            </div>
+            <div
+              className={cn(
+                "text-6xl font-mono font-bold transition-colors duration-300",
+                timerActive ? "text-primary" : "text-foreground"
+              )}
+              aria-live="polite"
+              aria-atomic="true"
+              style={{ minWidth: '160px' }} // Ensure consistent width
+            >
+              {formatTime(timeLeft)}
+            </div>
+            <div className="flex-1"> {/* Spacer */} </div>
           </div>
           <Progress value={progress} className="w-full h-2 transition-all duration-1000 ease-linear" />
           {showCompletionMessage && (
             <div className="flex items-center gap-2 text-accent-foreground p-3 bg-accent rounded-md transition-opacity duration-500 animate-in fade-in">
               <CheckCircle className="h-5 w-5" />
-              <span>Great job! You earned {POINTS_PER_SESSION} points.</span>
+              <span>Session Complete!</span>
             </div>
           )}
         </CardContent>
         <CardFooter className="flex flex-col gap-4">
-          <div className="flex justify-center gap-4 w-full">
-            {!timerActive ? (
-              <Button
-                onClick={startTimer}
-                className="bg-primary hover:bg-primary/90 text-primary-foreground flex-grow"
-                disabled={!nickname || (timeLeft !== FOCUS_DURATION && timeLeft > 0)} // Disable if paused or no nickname
-              >
-                <Play className="mr-2 h-4 w-4" /> Start Focus Session
-              </Button>
-            ) : (
-              <Button onClick={pauseTimer} variant="outline" className="flex-grow">
-                <Pause className="mr-2 h-4 w-4" /> Pause Session
-              </Button>
-            )}
-             <Button onClick={resetTimer} variant="secondary" className="flex-grow" disabled={timerActive || timeLeft === FOCUS_DURATION}>
-                Reset Timer
-            </Button>
-          </div>
-          <Input
+         <Input
             type="text"
             placeholder="Enter your nickname"
             value={nickname}
             onChange={handleNicknameChange}
-            className="w-full text-center"
+            className="w-full text-center mb-4"
             aria-label="Nickname"
           />
+          <div className="flex justify-center gap-4 w-full">
+            {!timerActive ? (
+               <Button
+                onClick={startTimer}
+                className="bg-primary hover:bg-primary/90 text-primary-foreground flex-grow"
+                disabled={!nickname || customDurationMinutes < 1 || customDurationMinutes > 120 || (timeLeft > 0 && timeLeft < currentFocusDurationSeconds)} // Disable if paused or invalid duration
+                aria-label="Start Focus Session"
+              >
+                <Play className="mr-2 h-4 w-4" /> {timeLeft > 0 && timeLeft < currentFocusDurationSeconds ? 'Resume' : 'Start'}
+              </Button>
+            ) : (
+              <Button onClick={pauseTimer} variant="outline" className="flex-grow" aria-label="Pause Session">
+                <Pause className="mr-2 h-4 w-4" /> Pause
+              </Button>
+            )}
+             <Button onClick={resetTimer} variant="secondary" className="flex-grow" disabled={timerActive || timeLeft === currentFocusDurationSeconds} aria-label="Reset Timer">
+                <TimerReset className="mr-2 h-4 w-4" /> Reset
+            </Button>
+          </div>
+
         </CardFooter>
       </Card>
 
+       {/* Session History Card */}
       <Card className="w-full max-w-md shadow-lg">
         <CardHeader className="flex flex-row items-center justify-between pb-2">
-          <CardTitle className="text-xl font-semibold">Leaderboard</CardTitle>
-           <Trophy className="h-5 w-5 text-amber-500" />
+          <CardTitle className="text-xl font-semibold">Session History</CardTitle>
+           <History className="h-5 w-5 text-muted-foreground" />
         </CardHeader>
         <CardContent>
-          {leaderboard.length > 0 ? (
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead className="w-[50px] text-center">Rank</TableHead>
-                  <TableHead>Nickname</TableHead>
-                  <TableHead className="text-right">Points</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {leaderboard.map((entry, index) => (
-                  <TableRow key={index} className={entry.nickname === nickname ? "bg-accent/50" : ""}>
-                    <TableCell className="font-medium text-center">{index + 1}</TableCell>
-                    <TableCell>{entry.nickname}</TableCell>
-                    <TableCell className="text-right">{entry.points}</TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
+          {sessionHistory.length > 0 ? (
+            <div className="max-h-60 overflow-y-auto"> {/* Scrollable history */}
+                <Table>
+                <TableHeader>
+                    <TableRow>
+                    <TableHead>Date</TableHead>
+                    <TableHead className="text-right">Duration</TableHead>
+                    </TableRow>
+                </TableHeader>
+                <TableBody>
+                    {sessionHistory.map((entry, index) => (
+                    <TableRow key={index}>
+                        <TableCell className="text-sm text-muted-foreground">
+                        {format(new Date(entry.completedAt), 'PPp')} {/* Format date nicely */}
+                        </TableCell>
+                        <TableCell className="text-right font-medium">
+                        {entry.durationMinutes} min
+                        </TableCell>
+                    </TableRow>
+                    ))}
+                </TableBody>
+                </Table>
+            </div>
           ) : (
              <p className="text-center text-muted-foreground italic py-4">
-              Complete a focus session to appear on the leaderboard!
+              {nickname ? `No sessions recorded for ${nickname} yet.` : 'Enter a nickname and complete a session to see history.'}
             </p>
           )}
         </CardContent>
@@ -242,3 +346,34 @@ export default function Home() {
     </div>
   );
 }
+```
+  </change>
+  <change>
+    <file>src/components/ui/label.tsx</file>
+    <description>Update Label component props type to React.ComponentPropsWithoutRef to align with Radix UI conventions.</description>
+    <content><![CDATA["use client"
+
+import * as React from "react"
+import * as LabelPrimitive from "@radix-ui/react-label"
+import { cva, type VariantProps } from "class-variance-authority"
+
+import { cn } from "@/lib/utils"
+
+const labelVariants = cva(
+  "text-sm font-medium leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-70"
+)
+
+const Label = React.forwardRef<
+  React.ElementRef<typeof LabelPrimitive.Root>,
+  React.ComponentPropsWithoutRef<typeof LabelPrimitive.Root> & // Use ComponentPropsWithoutRef
+    VariantProps<typeof labelVariants>
+>(({ className, ...props }, ref) => (
+  <LabelPrimitive.Root
+    ref={ref}
+    className={cn(labelVariants(), className)}
+    {...props}
+  />
+))
+Label.displayName = LabelPrimitive.Root.displayName
+
+export { Label }
