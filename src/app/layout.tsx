@@ -22,7 +22,7 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en" suppressHydrationWarning> {/* Added suppressHydrationWarning */}
-      {/* Removed geistMono variable */}
+      {/* Ensure no direct comments or whitespace here */}
       <body className={`${geistSans.variable} antialiased`} suppressHydrationWarning> {/* Added suppressHydrationWarning */}
         {children}
         <Toaster /> {/* Add Toaster here */}
